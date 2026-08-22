@@ -1,0 +1,185 @@
+# ============================================================
+# Phase 1: Docker Compose — Kafka + Portainer
+# ============================================================
+#
+# ARCHITECTURE OVERVIEW (Read this carefully!):
+#
+# ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+# │  Zookeeper  │────▶│   Kafka     │◀────│  Kafka UI   │
+# │  (Port 2181)│     │  (Port 9092)│     │  (Port 8080)│
+# └─────────────┘     └──────┬──────┘     └─────────────┘
+#                            │
+#                    ┌───────┴───────┐
+#                    │               │
+#              ┌─────▼─────┐  ┌─────▼─────┐
+#              │  Producer  │  │  Consumer  │
+#              │  (Python)  │  │  (Python)  │
+#              └───────────┘  └───────────┘
+#
+# WHY ZOOKEEPER?
+#   Kafka traditionally uses Zookeeper to manage broker metadata,
+#   leader election, and topic configuration. (Newer Kafka versions
+#   support KRaft mode without Zookeeper, but we use ZK for learning.)
+#
+# WHY KAFKA UI?
+#   A web interface to visually see topics, partitions, messages,
+#   and consumer groups — invaluable for debugging and learning.
+#
+# WHY PORTAINER?
+#   Web-based Docker management. You can deploy this entire stack
+#   from a GitHub URL: Stacks → Add Stack → Git Repository → paste URL.
+#
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # ZOOKEEPER — Kafka's coordination service
+  # ----------------------------------------------------------
+  # Zookeeper keeps track of:
+  #   - Which Kafka brokers are alive
+  #   - Which broker is the leader for each partition
+  #   - Topic configurations and ACLs
+  #
+  # Interview Q: "What happens if Zookeeper goes down?"
+  # Answer: Kafka can still serve reads/writes for a while, but
+  #         cannot elect new leaders or create new topics.
+  # ----------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181        # Port ZK listens on
+      ZOOKEEPER_TICK_TIME: 2000          # Basic time unit in ms for heartbeats
+    ports:
+      - "2181:2181"
+    networks:
+      - data-platform
+
+  # ----------------------------------------------------------
+  # KAFKA BROKER — The message queue / event streaming platform
+  # ----------------------------------------------------------
+  # Key concepts:
+  #   TOPIC: A named stream of records (like a database table)
+  #   PARTITION: A topic is split into partitions for parallelism
+  #   BROKER: A single Kafka server that stores partitions
+  #   OFFSET: A sequential ID for each message in a partition
+  #
+  # Interview Q: "Why Kafka over RabbitMQ?"
+  # Answer: Kafka is designed for HIGH THROUGHPUT event streaming
+  #         with replay capability (messages are persisted and
+  #         consumers can re-read). RabbitMQ is better for
+  #         task queues where messages are consumed once.
+  # ----------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"                      # Internal Docker network access
+      - "9093:9093"                      # External (host machine) access
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # LISTENERS define how Kafka accepts connections:
+      #   INTERNAL = for containers on the Docker network
+      #   EXTERNAL = for your host machine (localhost)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1    # Only 1 broker, so factor = 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"      # Topics auto-created on first produce
+    networks:
+      - data-platform
+
+  # ----------------------------------------------------------
+  # KAFKA UI — Web interface to inspect topics and messages
+  # ----------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - data-platform
+
+  # ----------------------------------------------------------
+  # PORTAINER — Docker management UI
+  # ----------------------------------------------------------
+  # Access at http://localhost:9000
+  # To deploy from GitHub:
+  #   1. Go to Stacks → Add Stack
+  #   2. Select "Git Repository"
+  #   3. Paste your GitHub repo URL
+  #   4. Set compose path to "docker-compose.yml"
+  #   5. Click "Deploy the stack"
+  # ----------------------------------------------------------
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    ports:
+      - "${PORTAINER_PORT:-9000}:9000"
+      - "8000:8000"                      # Edge agent tunnel (optional)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # Gives Portainer access to Docker
+      - portainer_data:/data                         # Persistent Portainer config
+    restart: always
+    networks:
+      - data-platform
+
+  # ----------------------------------------------------------
+  # PRODUCER — YOUR CODE! Fetches stock prices → publishes to Kafka
+  # ----------------------------------------------------------
+  producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: stock-producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER:-kafka:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-stock-prices}
+      STOCK_TICKERS: ${STOCK_TICKERS:-AAPL,MSFT,GOOGL}
+      FETCH_INTERVAL_SECONDS: ${FETCH_INTERVAL_SECONDS:-10}
+    networks:
+      - data-platform
+
+  # ----------------------------------------------------------
+  # CONSUMER — YOUR CODE! Reads from Kafka → prints to console
+  # ----------------------------------------------------------
+  consumer:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    container_name: stock-consumer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER:-kafka:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-stock-prices}
+    networks:
+      - data-platform
+
+# ============================================================
+# NETWORKS & VOLUMES
+# ============================================================
+# All services share the "data-platform" network so they can
+# communicate by container name (e.g., "kafka:9092").
+#
+# Interview Q: "How do Docker containers communicate?"
+# Answer: Via a user-defined bridge network. Containers resolve
+#         each other by service name (DNS). This is why we use
+#         "kafka:9092" not "localhost:9092" inside containers.
+# ============================================================
+networks:
+  data-platform:
+    driver: bridge
+
+volumes:
+  portainer_data:
