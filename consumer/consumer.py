@@ -83,8 +83,12 @@ KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "stock-prices")
 #
 # Docs: https://docs.confluent.io/platform/current/clients/confluent-kafka-python/html/index.html#consumer
 #
-# YOUR CODE HERE:
-# consumer = Consumer({ ... })
+consumer = Consumer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'group.id': 'stock-readers',
+    'auto.offset.reset': 'earliest',       # Read all historical messages
+    'enable.auto.commit': True,
+})
 # ============================================================
 
 
@@ -137,12 +141,61 @@ def consume_messages():
     print(f"Connecting to broker: {KAFKA_BROKER}")
     print("=" * 50)
 
-    # YOUR CODE HERE:
-    pass
+    consumer.subscribe([KAFKA_TOPIC])
+    print(f"Subscribed to: {KAFKA_TOPIC}")
+
+    try:
+        while True:
+            msg = consumer.poll(timeout=1.0)
+
+            if msg is None:
+                # No message within timeout — just keep polling
+                continue
+
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    # Reached end of partition — not an error, just informational
+                    print(f"ℹ Reached end of {msg.topic()} [partition {msg.partition()}]")
+                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                    # Topic doesn't exist yet — producer hasn't sent first message
+                    print(f"⏳ Topic '{KAFKA_TOPIC}' not ready yet, retrying...")
+                    time.sleep(5)
+                else:
+                    # Real error — log but don't crash, keep trying
+                    print(f"✗ Consumer error: {msg.error()}")
+                    time.sleep(2)
+                continue
+
+            # Decode the message
+            key = msg.key().decode("utf-8") if msg.key() else "N/A"
+            value = json.loads(msg.value().decode("utf-8"))
+
+            # Format volume for readability (e.g., 52431678 → 52.4M)
+            vol = value.get("volume", 0)
+            if vol >= 1_000_000:
+                vol_str = f"{vol / 1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"{vol / 1_000:.1f}K"
+            else:
+                vol_str = str(vol)
+
+            print(
+                f"📈 [Partition {msg.partition()} | Offset {msg.offset()}] "
+                f"{key}: ${value.get('price', 0):.2f} | "
+                f"Bid: ${value.get('bid', 0):.2f} | Ask: ${value.get('ask', 0):.2f} | "
+                f"Vol: {vol_str}"
+            )
+
+    except KeyboardInterrupt:
+        print("\n⏹ Consumer stopped by user.")
+    finally:
+        # Commits offsets and leaves the consumer group cleanly
+        consumer.close()
+        print("Consumer closed.")
 
 
 if __name__ == "__main__":
-    # Add a small delay to let Kafka and Producer start up first
-    print("Waiting 20s for Kafka and Producer to be ready...")
-    time.sleep(20)
+    # Add a delay to let Kafka and Producer start up first
+    print("Waiting 30s for Kafka and Producer to be ready...")
+    time.sleep(30)
     consume_messages()

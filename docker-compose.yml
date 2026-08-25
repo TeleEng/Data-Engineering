@@ -111,26 +111,21 @@ services:
   # ----------------------------------------------------------
   # PORTAINER — Docker management UI
   # ----------------------------------------------------------
-  # Access at http://localhost:9000
-  # To deploy from GitHub:
-  #   1. Go to Stacks → Add Stack
-  #   2. Select "Git Repository"
-  #   3. Paste your GitHub repo URL
-  #   4. Set compose path to "docker-compose.yml"
-  #   5. Click "Deploy the stack"
+  # REMOVED: You already have Portainer running on port 9443.
+  # If you need Portainer in this stack, uncomment below:
   # ----------------------------------------------------------
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: portainer
-    ports:
-      - "${PORTAINER_PORT:-9000}:9000"
-      - "8000:8000"                      # Edge agent tunnel (optional)
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # Gives Portainer access to Docker
-      - portainer_data:/data                         # Persistent Portainer config
-    restart: always
-    networks:
-      - data-platform
+  # portainer:
+  #   image: portainer/portainer-ce:latest
+  #   container_name: portainer
+  #   ports:
+  #     - "${PORTAINER_PORT:-9000}:9000"
+  #     - "8000:8000"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - portainer_data:/data
+  #   restart: always
+  #   networks:
+  #     - data-platform
 
   # ----------------------------------------------------------
   # PRODUCER — YOUR CODE! Fetches stock prices → publishes to Kafka
@@ -181,5 +176,5 @@ networks:
   data-platform:
     driver: bridge
 
-volumes:
-  portainer_data:
+# volumes:
+#   portainer_data:       # Only needed if Portainer is in this stack

@@ -38,6 +38,7 @@ INTERVIEW TIP:
 import os
 import json
 import time
+import random
 from datetime import datetime, timezone
 
 import yfinance as yf
@@ -68,8 +69,11 @@ FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL_SECONDS", "10"))
 # Example:
 #   producer = Producer({'bootstrap.servers': 'some-broker:9092'})
 #
-# YOUR CODE HERE:
-# producer = Producer({ ... })
+producer = Producer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'client.id': 'stock-producer',
+    'acks': 'all',                  # Wait for all ISR replicas to confirm
+})
 # ============================================================
 
 
@@ -99,8 +103,10 @@ def delivery_callback(err, msg):
         "✗ Delivery failed: [Errno 111] Connection refused"
     ============================================================
     """
-    # YOUR CODE HERE:
-    pass
+    if err is not None:
+        print(f"✗ Delivery failed: {err}")
+    else:
+        print(f"✓ Delivered to {msg.topic()} [partition {msg.partition()}] @ offset {msg.offset()}")
 
 
 def fetch_stock_data(ticker: str) -> dict | None:
@@ -135,8 +141,70 @@ def fetch_stock_data(ticker: str) -> dict | None:
 
     ============================================================
     """
-    # YOUR CODE HERE:
-    pass
+    try:
+        stock = yf.Ticker(ticker)
+
+        # Use history() — works reliably even when market is closed
+        hist = stock.history(period="1d")
+        if hist.empty:
+            raise ValueError("No data returned")
+
+        latest = hist.iloc[-1]
+        price = latest.get("Close", 0.0)
+        volume = latest.get("Volume", 0)
+
+        # info dict has bid/ask; gracefully default to 0
+        info = stock.info
+        bid = info.get("bid", 0.0)
+        ask = info.get("ask", 0.0)
+
+        return {
+            "ticker": ticker,
+            "price": round(float(price), 4) if price else 0.0,
+            "volume": int(volume) if volume else 0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bid": round(float(bid), 4),
+            "ask": round(float(ask), 4),
+            "source": "yahoo_finance",
+        }
+    except Exception as e:
+        print(f"⚠ yfinance failed for {ticker}: {e} — using simulated data")
+        return simulate_stock_data(ticker)
+
+
+# Realistic base prices for simulation (updated periodically)
+SIMULATED_PRICES = {
+    "AAPL": 195.0, "MSFT": 425.0, "GOOGL": 178.0,
+    "AMZN": 190.0, "TSLA": 255.0, "NVDA": 130.0,
+    "AMD": 160.0,  "INTC": 32.0,  "META": 510.0,
+}
+
+
+def simulate_stock_data(ticker: str) -> dict:
+    """
+    Generate realistic simulated stock data when yfinance is unavailable.
+    Price walks randomly around a base price with small fluctuations.
+    This ensures the Kafka pipeline always has data flowing for learning.
+    """
+    base = SIMULATED_PRICES.get(ticker, 100.0)
+
+    # Random walk: ±0.5% from base price
+    price = round(base * (1 + random.uniform(-0.005, 0.005)), 4)
+    spread = round(price * 0.0003, 4)  # ~0.03% bid-ask spread
+    volume = random.randint(10_000_000, 80_000_000)
+
+    # Update base price for next call (makes it walk over time)
+    SIMULATED_PRICES[ticker] = price
+
+    return {
+        "ticker": ticker,
+        "price": price,
+        "volume": volume,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "bid": round(price - spread, 4),
+        "ask": round(price + spread, 4),
+        "source": "simulated",
+    }
 
 
 def produce_messages():
@@ -179,8 +247,30 @@ def produce_messages():
     print(f"Fetch interval: {FETCH_INTERVAL}s")
     print("=" * 50)
 
-    # YOUR CODE HERE:
-    pass
+    while True:
+        count = 0
+        for ticker in STOCK_TICKERS:
+            data = fetch_stock_data(ticker.strip())
+            if data is None:
+                continue
+
+            # Serialize dict → JSON string (Kafka needs bytes or str)
+            value = json.dumps(data)
+
+            # Key = ticker → all messages for same ticker go to same partition
+            producer.produce(
+                topic=KAFKA_TOPIC,
+                key=ticker.strip(),
+                value=value,
+                callback=delivery_callback,
+            )
+            count += 1
+
+        # Block until all buffered messages are delivered
+        producer.flush()
+
+        print(f"📤 Published {count}/{len(STOCK_TICKERS)} tickers | sleeping {FETCH_INTERVAL}s...")
+        time.sleep(FETCH_INTERVAL)
 
 
 if __name__ == "__main__":
