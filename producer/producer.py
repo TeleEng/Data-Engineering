@@ -38,6 +38,7 @@ INTERVIEW TIP:
 import os
 import json
 import time
+import random
 from datetime import datetime, timezone
 
 import yfinance as yf
@@ -142,13 +143,17 @@ def fetch_stock_data(ticker: str) -> dict | None:
     """
     try:
         stock = yf.Ticker(ticker)
-        fast = stock.fast_info
 
-        # fast_info is a lightweight call — no full API round-trip
-        price = fast.last_price
-        volume = fast.last_volume
+        # Use history() — works reliably even when market is closed
+        hist = stock.history(period="1d")
+        if hist.empty:
+            raise ValueError("No data returned")
 
-        # info dict has bid/ask but is heavier; gracefully default to 0
+        latest = hist.iloc[-1]
+        price = latest.get("Close", 0.0)
+        volume = latest.get("Volume", 0)
+
+        # info dict has bid/ask; gracefully default to 0
         info = stock.info
         bid = info.get("bid", 0.0)
         ask = info.get("ask", 0.0)
@@ -160,10 +165,46 @@ def fetch_stock_data(ticker: str) -> dict | None:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "bid": round(float(bid), 4),
             "ask": round(float(ask), 4),
+            "source": "yahoo_finance",
         }
     except Exception as e:
-        print(f"⚠ Error fetching {ticker}: {e}")
-        return None
+        print(f"⚠ yfinance failed for {ticker}: {e} — using simulated data")
+        return simulate_stock_data(ticker)
+
+
+# Realistic base prices for simulation (updated periodically)
+SIMULATED_PRICES = {
+    "AAPL": 195.0, "MSFT": 425.0, "GOOGL": 178.0,
+    "AMZN": 190.0, "TSLA": 255.0, "NVDA": 130.0,
+    "AMD": 160.0,  "INTC": 32.0,  "META": 510.0,
+}
+
+
+def simulate_stock_data(ticker: str) -> dict:
+    """
+    Generate realistic simulated stock data when yfinance is unavailable.
+    Price walks randomly around a base price with small fluctuations.
+    This ensures the Kafka pipeline always has data flowing for learning.
+    """
+    base = SIMULATED_PRICES.get(ticker, 100.0)
+
+    # Random walk: ±0.5% from base price
+    price = round(base * (1 + random.uniform(-0.005, 0.005)), 4)
+    spread = round(price * 0.0003, 4)  # ~0.03% bid-ask spread
+    volume = random.randint(10_000_000, 80_000_000)
+
+    # Update base price for next call (makes it walk over time)
+    SIMULATED_PRICES[ticker] = price
+
+    return {
+        "ticker": ticker,
+        "price": price,
+        "volume": volume,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "bid": round(price - spread, 4),
+        "ask": round(price + spread, 4),
+        "source": "simulated",
+    }
 
 
 def produce_messages():

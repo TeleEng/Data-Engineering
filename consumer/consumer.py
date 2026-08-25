@@ -156,10 +156,14 @@ def consume_messages():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     # Reached end of partition — not an error, just informational
                     print(f"ℹ Reached end of {msg.topic()} [partition {msg.partition()}]")
+                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                    # Topic doesn't exist yet — producer hasn't sent first message
+                    print(f"⏳ Topic '{KAFKA_TOPIC}' not ready yet, retrying...")
+                    time.sleep(5)
                 else:
-                    # Real error
+                    # Real error — log but don't crash, keep trying
                     print(f"✗ Consumer error: {msg.error()}")
-                    break
+                    time.sleep(2)
                 continue
 
             # Decode the message
@@ -191,7 +195,7 @@ def consume_messages():
 
 
 if __name__ == "__main__":
-    # Add a small delay to let Kafka and Producer start up first
-    print("Waiting 20s for Kafka and Producer to be ready...")
-    time.sleep(20)
+    # Add a delay to let Kafka and Producer start up first
+    print("Waiting 30s for Kafka and Producer to be ready...")
+    time.sleep(30)
     consume_messages()
