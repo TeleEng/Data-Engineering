@@ -68,8 +68,11 @@ FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL_SECONDS", "10"))
 # Example:
 #   producer = Producer({'bootstrap.servers': 'some-broker:9092'})
 #
-# YOUR CODE HERE:
-# producer = Producer({ ... })
+producer = Producer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'client.id': 'stock-producer',
+    'acks': 'all',                  # Wait for all ISR replicas to confirm
+})
 # ============================================================
 
 
@@ -99,8 +102,10 @@ def delivery_callback(err, msg):
         "✗ Delivery failed: [Errno 111] Connection refused"
     ============================================================
     """
-    # YOUR CODE HERE:
-    pass
+    if err is not None:
+        print(f"✗ Delivery failed: {err}")
+    else:
+        print(f"✓ Delivered to {msg.topic()} [partition {msg.partition()}] @ offset {msg.offset()}")
 
 
 def fetch_stock_data(ticker: str) -> dict | None:
@@ -135,8 +140,30 @@ def fetch_stock_data(ticker: str) -> dict | None:
 
     ============================================================
     """
-    # YOUR CODE HERE:
-    pass
+    try:
+        stock = yf.Ticker(ticker)
+        fast = stock.fast_info
+
+        # fast_info is a lightweight call — no full API round-trip
+        price = fast.last_price
+        volume = fast.last_volume
+
+        # info dict has bid/ask but is heavier; gracefully default to 0
+        info = stock.info
+        bid = info.get("bid", 0.0)
+        ask = info.get("ask", 0.0)
+
+        return {
+            "ticker": ticker,
+            "price": round(float(price), 4) if price else 0.0,
+            "volume": int(volume) if volume else 0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bid": round(float(bid), 4),
+            "ask": round(float(ask), 4),
+        }
+    except Exception as e:
+        print(f"⚠ Error fetching {ticker}: {e}")
+        return None
 
 
 def produce_messages():
@@ -179,8 +206,30 @@ def produce_messages():
     print(f"Fetch interval: {FETCH_INTERVAL}s")
     print("=" * 50)
 
-    # YOUR CODE HERE:
-    pass
+    while True:
+        count = 0
+        for ticker in STOCK_TICKERS:
+            data = fetch_stock_data(ticker.strip())
+            if data is None:
+                continue
+
+            # Serialize dict → JSON string (Kafka needs bytes or str)
+            value = json.dumps(data)
+
+            # Key = ticker → all messages for same ticker go to same partition
+            producer.produce(
+                topic=KAFKA_TOPIC,
+                key=ticker.strip(),
+                value=value,
+                callback=delivery_callback,
+            )
+            count += 1
+
+        # Block until all buffered messages are delivered
+        producer.flush()
+
+        print(f"📤 Published {count}/{len(STOCK_TICKERS)} tickers | sleeping {FETCH_INTERVAL}s...")
+        time.sleep(FETCH_INTERVAL)
 
 
 if __name__ == "__main__":
