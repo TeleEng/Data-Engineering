@@ -161,6 +161,70 @@ services:
     networks:
       - data-platform
 
+  # ============================================================
+  # PHASE 2: APACHE SPARK (PySpark Structured Streaming)
+  # ============================================================
+  # Interview Q: "Why Spark instead of just Kafka Consumers?"
+  # Answer: Kafka Consumers are great for simple ETL, but Spark
+  #         excels at stateful stream processing like tumbling 
+  #         windows, joins across streams, and watermarking.
+  # ============================================================
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "8081:8080" # Spark Master UI
+    networks:
+      - data-platform
+
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    container_name: spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    depends_on:
+      - spark-master
+    ports:
+      - "8082:8081" # Spark Worker UI
+    networks:
+      - data-platform
+
+  spark-submit:
+    image: bitnami/spark:3.5.0
+    container_name: spark-submit
+    # We mount the local 'spark' folder into the container
+    volumes:
+      - ./spark:/app
+    environment:
+      - KAFKA_BROKER=${KAFKA_BROKER:-kafka:9092}
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-stock-prices}
+    # This command runs your streaming job and downloads the Kafka package
+    command: >
+      spark-submit 
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 
+      --master spark://spark-master:7077 
+      /app/streaming_job.py
+    depends_on:
+      - spark-master
+      - kafka
+    networks:
+      - data-platform
+    # Don't auto-restart, we just want to run it on demand
+    restart: "no"
+
 # ============================================================
 # NETWORKS & VOLUMES
 # ============================================================
